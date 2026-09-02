@@ -9,6 +9,9 @@ static const char *const TAG = "prana_ble";
 
 static const uint16_t PRANA_MAGIC = 0xEFBE;
 static const uint8_t PRANA_CMD_PREFIX = 0x04;
+// Clock set packet, as written by the official PRANA Online app right after connecting:
+//   BE EF 0C ss mm hh dow DD MM YY   (binary, local time, dow: Monday=1..Sunday=7, YY = year-2000)
+static const uint8_t PRANA_TIME_PREFIX = 0x0C;
 static const uint8_t PRANA_STATE[] = {0xBE, 0xEF, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x5A};
 
 //Only new devices - direct fan speed control
@@ -38,6 +41,25 @@ struct PranaCmdPacket
     magic = PRANA_MAGIC;
     prefix = PRANA_CMD_PREFIX;
     this->command = command;
+  }
+} __attribute__((packed));
+
+struct PranaTimePacket
+{
+  uint16_t magic;
+  uint8_t prefix;
+  uint8_t second;
+  uint8_t minute;
+  uint8_t hour;
+  uint8_t day_of_week;
+  uint8_t day_of_month;
+  uint8_t month;
+  uint8_t year;
+
+  PranaTimePacket()
+  {
+    magic = PRANA_MAGIC;
+    prefix = PRANA_TIME_PREFIX;
   }
 } __attribute__((packed));
 

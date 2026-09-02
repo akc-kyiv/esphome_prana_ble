@@ -333,6 +333,45 @@ bool PranaBLEHub::set_heating(bool state)
   }
   return false;
 }
+bool PranaBLEHub::sync_time()
+{
+  if (this->time_ == nullptr) {
+    ESP_LOGW(TAG, "[%s] time_id not configured, cannot sync clock", this->get_name().c_str());
+    return false;
+  }
+  if (!this->is_connected()) {
+    ESP_LOGW(TAG, "[%s] Not connected, cannot sync clock", this->get_name().c_str());
+    return false;
+  }
+  this->last_time_sync_attempt_ = millis();
+  auto now = this->time_->now();
+  if (!now.is_valid()) {
+    ESP_LOGW(TAG, "[%s] ESP time not valid yet, skipping clock sync", this->get_name().c_str());
+    return false;
+  }
+
+  PranaTimePacket pkt;
+  pkt.second = now.second;
+  pkt.minute = now.minute;
+  pkt.hour = now.hour;
+  // ESPTime: Sunday=1..Saturday=7  ->  Prana: Monday=1..Sunday=7
+  pkt.day_of_week = (now.day_of_week == 1) ? 7 : now.day_of_week - 1;
+  pkt.day_of_month = now.day_of_month;
+  pkt.month = now.month;
+  pkt.year = now.year % 100;
+
+  auto status = this->send_data((uint8_t *) &pkt, sizeof(PranaTimePacket));
+  if (status) {
+    ESP_LOGW(TAG, "[%s] clock sync write failed, status=%d", this->get_name().c_str(), status);
+    return false;
+  }
+  ESP_LOGI(TAG, "[%s] clock synced to %04d-%02d-%02d %02d:%02d:%02d (dow %d)", this->get_name().c_str(),
+           now.year, now.month, now.day_of_month, now.hour, now.minute, now.second, pkt.day_of_week);
+  this->last_time_sync_ = millis();
+  this->time_synced_ = true;
+  return true;
+}
+
 bool PranaBLEHub::send_command(uint8_t command, bool update) {
   PranaCmdPacket packet(command);
   auto status = this->send_packet(&packet, update);
@@ -471,6 +510,11 @@ void PranaBLEHub::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t 
         this->set_notify_(true);
 
         this->dispatch_state_(true);
+
+        if (this->time_ != nullptr) {
+          this->time_synced_ = false;
+          this->set_timeout("prana_time_sync", 3000, [this]() { this->sync_time(); });
+        }
       } else {
         ESP_LOGW(TAG, "[%s] Failed discovering service characteristics.", this->get_name().c_str());
         this->parent()->set_enabled(false);
@@ -591,6 +635,8 @@ void PranaBLEHub::dump_config() {
   ESP_LOGCONFIG(TAG, "  ble_client.app_id: %d", this->parent()->app_id);
   ESP_LOGCONFIG(TAG, "  ble_client.conn_id: %d", this->parent()->get_conn_id());
   LOG_UPDATE_INTERVAL(this);
+  ESP_LOGCONFIG(TAG, "  Clock sync: %s (interval %u s)", this->time_ != nullptr ? "enabled" : "disabled",
+                (unsigned) (this->time_sync_interval_ / 1000));
   ESP_LOGCONFIG(TAG, "  Child components (%d):", this->children_.size());
   for (auto *child : this->children_) {
     ESP_LOGCONFIG(TAG, "    - %s", child->describe().c_str());
@@ -618,6 +664,14 @@ void PranaBLEHub::dispatch_status_() {
   } else {
     uint32_t diff = millis() - this->last_notify_;
     send_update_request();
+
+    if (this->time_ != nullptr) {
+      bool due = this->time_sync_interval_ > 0 && (millis() - this->last_time_sync_) > this->time_sync_interval_;
+      bool retry = !this->time_synced_ && (millis() - this->last_time_sync_attempt_) > 30000;
+      if (due || retry) {
+        this->sync_time();
+      }
+    }
 
     if (this->timeout_ > 0 && diff > this->timeout_ && this->parent()->enabled) {
       ESP_LOGW(TAG, "[%s] Timed out after %i sec. Retrying...", this->get_name().c_str(), (int)this->timeout_);

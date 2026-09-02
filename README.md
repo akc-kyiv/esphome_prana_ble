@@ -15,6 +15,7 @@ What is working for now:
   - All sensors that your device may have: voltage, frequency, temperatures, humidity, pressure, TVOC, CO2
   - Turn on/off, winter mode, heater switches
   - Set current display mode for recuperator's display
+  - Keep the recuperator's clock in sync (optional `time_id`, see example config)
 
 
 See [example config](https://github.com/voed/esphome_prana_ble/blob/master/prana_conf_example.yaml) to create your own configuration.

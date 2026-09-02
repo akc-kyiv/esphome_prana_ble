@@ -12,6 +12,7 @@ CODEOWNERS = ["@voed"]
 DEPENDENCIES = ["ble_client"]
 MULTI_CONF = True
 CONF_PRANA_ID = "prana_ble_id"
+CONF_TIME_SYNC_INTERVAL = "time_sync_interval"
 
 MULTI_CONF = 3
 
@@ -27,6 +28,9 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_TIME_ID): cv.use_id(time.RealTimeClock),
             cv.Optional(
                 CONF_RECEIVE_TIMEOUT, default="0s"
+            ): cv.positive_time_period_milliseconds,
+            cv.Optional(
+                CONF_TIME_SYNC_INTERVAL, default="24h"
             ): cv.positive_time_period_milliseconds,
         }
     )
@@ -56,5 +60,6 @@ async def to_code(config):
     if CONF_TIME_ID in config:
         time_ = await cg.get_variable(config[CONF_TIME_ID])
         cg.add(var.set_time_id(time_))
+        cg.add(var.set_time_sync_interval(config[CONF_TIME_SYNC_INTERVAL]))
     if CONF_RECEIVE_TIMEOUT in config:
         cg.add(var.set_status_timeout(config[CONF_RECEIVE_TIMEOUT]))

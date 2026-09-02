@@ -62,9 +62,17 @@ ble_client:
   #- mac_address: ${mac_address_02} #Uncomment if you want to connect multiple recuperators to this ESP
   #  id: prana2
 
+# Optional: keep the recuperator's clock in sync. Without it the clock only gets set
+# when the official smartphone app connects.
+time:
+  - platform: homeassistant
+    id: ha_time
+
 prana_ble:
   - id: prana_client
     ble_client_id: prana
+    time_id: ha_time              # writes the ESP's local time into the device after every connect
+    time_sync_interval: 24h       # ...and periodically while connected. Default 24h
   #- id: prana_client2 #Uncomment if you want to connect multiple recuperators to this ESP
   #  ble_client_id: prana2
 
@@ -143,3 +151,10 @@ select:
     # switch between Auto, Auto+ and Manual modes
     fan_mode:
       name: "Fan mode"
+
+# Optional: manual clock sync from Home Assistant
+button:
+  - platform: template
+    name: "Sync clock"
+    on_press:
+      - lambda: id(prana_client).sync_time();

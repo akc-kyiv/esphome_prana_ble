@@ -2,6 +2,7 @@
 
 #include "esphome/components/ble_client/ble_client.h"
 #include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
+#include "esphome/components/time/real_time_clock.h"
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
 #include "esphome/core/hal.h"
@@ -76,6 +77,12 @@ class PranaBLEHub : public esphome::ble_client::BLEClientNode, public PollingCom
   bool set_winter_mode(bool state);
   bool set_heating(bool state);
 
+  /** Clock sync. Writes the ESP's current local time into the recuperator (same packet the official app sends). */
+  void set_time_id(time::RealTimeClock *rtc) { this->time_ = rtc; }
+  void set_time_sync_interval(uint32_t interval_ms) { this->time_sync_interval_ = interval_ms; }
+  /** @return `true` if the packet was written. Fails when not connected or when the ESP has no valid time yet. */
+  bool sync_time();
+
   /** Send the `button`. */
   bool send_command(const PranaCommand command, bool update=false);
   bool send_command(const uint8_t command, bool update=false);
@@ -138,6 +145,11 @@ class PranaBLEHub : public esphome::ble_client::BLEClientNode, public PollingCom
   std::string name_;
 
   uint32_t last_notify_ = 0;
+  time::RealTimeClock *time_{nullptr};
+  uint32_t time_sync_interval_{0};
+  uint32_t last_time_sync_ = 0;
+  uint32_t last_time_sync_attempt_ = 0;
+  bool time_synced_ = false;
   bool force_refresh_ = false;
   bool keep_connected_ = true;
 
