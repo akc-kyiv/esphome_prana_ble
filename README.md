@@ -18,7 +18,9 @@ What is working for now:
   - Keep the recuperator's clock in sync (optional `time_id`, see example config)
   - Display mode changes are verified against the device (one step at a time, or a single direct
     command with `direct_control: true`), so devices with fewer display modes or a different mode
-    order no longer end up on the wrong page
+    order no longer end up on the wrong page. The direct command is what the official app sends and
+    is confirmed on a PRANA 150 (firmware 49); try it, the component falls back to stepping if your
+    device ignores it
 
 
 See [example config](https://github.com/voed/esphome_prana_ble/blob/master/prana_conf_example.yaml) to create your own configuration.

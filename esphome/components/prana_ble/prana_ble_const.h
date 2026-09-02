@@ -14,10 +14,11 @@ static const uint8_t PRANA_CMD_PREFIX = 0x04;
 static const uint8_t PRANA_TIME_PREFIX = 0x0C;
 static const uint8_t PRANA_STATE[] = {0xBE, 0xEF, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x5A};
 
-// Direct display-mode set: BE EF 04 (0x5A + mode). Captured from the official app, which sent
-// BE EF 04 64 to switch the display to "Time" (mode 10) in a single write. Opt-in via
-// `display_mode: { direct_control: true }`; the hub falls back to left/right stepping if the device
-// does not confirm the new mode.
+// Direct display-mode set: BE EF 04 (0x5A + mode). Captured from the official app (BE EF 04 64 =
+// "Time") and confirmed live on a PRANA RECUPERATOR 150 (firmware 49) for Fan (0x5A),
+// Temp outside (0x5C), Date (0x63) and Time (0x64): the device reports the new mode within ~300 ms.
+// Opt-in via `display_mode: { direct_control: true }`; the hub falls back to left/right stepping if
+// the device does not confirm the new mode.
 static const uint8_t CMD_DISPLAY_SET_BASE = 0x5A;
 
 // Order in which the display cycles on a fully equipped device. Slot 8 has never been observed
@@ -130,6 +131,18 @@ enum PranaCommand : uint8_t {
   CMD_FAN_IN_OFF          = 0x0D,
   CMD_DISPLAY_LEFT        = 0x19,
   CMD_DISPLAY_RIGHT       = 0x1A,
+
+  // direct display mode: CMD_DISPLAY_SET_BASE + PranaDisplayMode
+  CMD_DISPLAY_FAN         = 0x5A,
+  CMD_DISPLAY_TEMP_IN     = 0x5B,
+  CMD_DISPLAY_TEMP_OUT    = 0x5C,
+  CMD_DISPLAY_CO2         = 0x5D,
+  CMD_DISPLAY_VOC         = 0x5E,
+  CMD_DISPLAY_HUMIDITY    = 0x5F,
+  CMD_DISPLAY_AIR_QUALITY = 0x60,
+  CMD_DISPLAY_PRESSURE    = 0x61,
+  CMD_DISPLAY_DATE        = 0x63,
+  CMD_DISPLAY_TIME        = 0x64,
 
 
 

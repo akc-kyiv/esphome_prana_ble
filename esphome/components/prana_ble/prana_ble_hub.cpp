@@ -43,7 +43,15 @@ static const LogString *prana_cmd_to_string(uint8_t command) {
       return LOG_STR("CMD_FAN_IN_SPEED_DOWN");
     case CMD_FAN_IN_OFF:
       return LOG_STR("CMD_FAN_IN_OFF");
+    case CMD_DISPLAY_LEFT:
+      return LOG_STR("CMD_DISPLAY_LEFT");
+    case CMD_DISPLAY_RIGHT:
+      return LOG_STR("CMD_DISPLAY_RIGHT");
     default:
+      if (command >= CMD_DISPLAY_SET_BASE && command < CMD_DISPLAY_SET_BASE + PranaDisplayMode::MODE_COUNT)
+        return LOG_STR("CMD_DISPLAY_SET");
+      if (command >= cmd_fan_in_speed[0] && command <= cmd_fan_speed[9])
+        return LOG_STR("CMD_FAN_SPEED_DIRECT");
       return LOG_STR("unknown");
   }
 }

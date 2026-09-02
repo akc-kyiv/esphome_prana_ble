@@ -148,8 +148,9 @@ select:
     display_mode:
       name: "Display mode"
       # Optional: set the mode with one command (BE EF 04 5A+mode, as the official app does) instead of
-      # stepping left/right. The result is verified; if the device does not confirm it, stepping is used
-      # (and only stepping, after two unconfirmed attempts on the same connection).
+      # stepping left/right. Confirmed on a PRANA 150 (firmware 49). The result is verified; if the device
+      # does not confirm it, stepping is used (and only stepping, after two unconfirmed attempts on the
+      # same connection).
       direct_control: false
 
     # switch between Auto, Auto+ and Manual modes
