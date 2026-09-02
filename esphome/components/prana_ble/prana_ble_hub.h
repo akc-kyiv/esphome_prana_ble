@@ -145,22 +145,28 @@ class PranaBLEHub : public esphome::ble_client::BLEClientNode, public PollingCom
   /* Display mode change state machine (see prana_ble_hub.cpp, "Display mode") */
   static const uint32_t DISPLAY_STEP_TIMEOUT_MS = 700;
   static const uint8_t DISPLAY_MAX_STEPS = 16;
+  static const uint8_t DISPLAY_MAX_WRITE_RETRIES = 10;
+  static const uint8_t DISPLAY_DIRECT_MISSES_TO_LATCH = 2;
   bool display_direct_{false};          // config: try CMD_DISPLAY_SET_BASE + mode first
-  bool display_direct_failed_{false};   // direct set was not confirmed on this connection -> step only
+  bool display_direct_failed_{false};   // direct set unconfirmed repeatedly on this connection -> step only
+  uint8_t display_direct_misses_{0};    // consecutive unconfirmed direct attempts
   int16_t display_target_{-1};          // -1 == idle
   bool display_direct_pending_{false};  // a direct set was sent, waiting for confirmation
   bool display_direct_retry_{false};
+  bool display_settling_{false};        // waiting for a fresh status before the first press of a walk
   int16_t display_last_seen_{-1};
   uint8_t display_budget_{0};
+  uint8_t display_write_retries_{0};
   uint8_t display_stall_{0};            // consecutive timeouts without progress
   bool display_right_{true};
   bool display_reversed_{false};
   uint16_t display_visited_{0};
-  void display_start_walk_();
+  void display_start_walk_(bool settle);
+  void display_walk_from_(uint8_t mode);
   void display_step_();
   void display_on_status_(uint8_t mode);
   void display_on_timeout_();
-  void display_finish_(const char *why);
+  void display_finish_(const char *why, bool failed = false);
   bool display_prefer_right_(uint8_t from, uint8_t to);
 
   uint8_t set_notify_(bool enable);

@@ -334,16 +334,22 @@ void PranaBLEHub::set_display_mode(short mode)
     return;
   }
   if(mode == this->status.display_mode)
+  {
+    if(this->display_target_ >= 0)
+      this->display_finish_("retargeted to the mode currently shown");
     return;
+  }
 
-  if(this->display_target_ >= 0)
+  bool retarget = this->display_target_ >= 0;
+  if(retarget)
   {
     ESP_LOGD(TAG, "[%s] Display change in progress, retargeting to %d", this->get_name().c_str(), mode);
     this->cancel_timeout("prana_disp");
   }
   this->display_target_ = mode;
+  this->display_settling_ = false;
 
-  if(this->display_direct_ && !this->display_direct_failed_)
+  if(this->display_direct_ && !this->display_direct_failed_ && !retarget)
   {
     uint8_t cmd = CMD_DISPLAY_SET_BASE + (uint8_t) mode;
     ESP_LOGD(TAG, "[%s] Direct display set: mode %d (cmd 0x%02X)", this->get_name().c_str(), mode, cmd);
@@ -354,7 +360,8 @@ void PranaBLEHub::set_display_mode(short mode)
     this->set_timeout("prana_disp", DISPLAY_STEP_TIMEOUT_MS, [this]() { this->display_on_timeout_(); });
     return;
   }
-  this->display_start_walk_();
+  // after a retarget a press of the previous walk may still be in flight: settle on a fresh status first
+  this->display_start_walk_(retarget);
 }
 
 bool PranaBLEHub::display_prefer_right_(uint8_t from, uint8_t to)
@@ -367,17 +374,32 @@ bool PranaBLEHub::display_prefer_right_(uint8_t from, uint8_t to)
   return r <= l;
 }
 
-void PranaBLEHub::display_start_walk_()
+void PranaBLEHub::display_start_walk_(bool settle)
 {
   this->display_direct_pending_ = false;
-  this->display_last_seen_ = this->status.display_mode;
   this->display_budget_ = DISPLAY_MAX_STEPS;
+  this->display_write_retries_ = 0;
   this->display_stall_ = 0;
   this->display_reversed_ = false;
-  this->display_visited_ = this->status.display_mode < 16 ? (1u << this->status.display_mode) : 0;
-  this->display_right_ = this->display_prefer_right_(this->status.display_mode, (uint8_t) this->display_target_);
+  if(settle)
+  {
+    // the cached status may predate a command that is still in flight: never press blind on it
+    this->display_settling_ = true;
+    this->send_update_request();
+    this->set_timeout("prana_disp", DISPLAY_STEP_TIMEOUT_MS, [this]() { this->display_on_timeout_(); });
+    return;
+  }
+  this->display_walk_from_(this->status.display_mode);
+}
+
+void PranaBLEHub::display_walk_from_(uint8_t mode)
+{
+  this->display_settling_ = false;
+  this->display_last_seen_ = mode;
+  this->display_visited_ = mode < 16 ? (1u << mode) : 0;
+  this->display_right_ = this->display_prefer_right_(mode, (uint8_t) this->display_target_);
   ESP_LOGD(TAG, "[%s] Stepping display %s from mode %u towards %d", this->get_name().c_str(),
-           this->display_right_ ? "right" : "left", this->status.display_mode, this->display_target_);
+           this->display_right_ ? "right" : "left", mode, this->display_target_);
   this->display_step_();
 }
 
@@ -387,16 +409,22 @@ void PranaBLEHub::display_step_()
     return;
   if(this->display_budget_ == 0)
   {
-    this->display_finish_("step budget exhausted");
+    this->display_finish_("step budget exhausted", true);
     return;
   }
-  this->display_budget_--;
   if(!this->send_command(this->display_right_ ? CMD_DISPLAY_RIGHT : CMD_DISPLAY_LEFT, false))
   {
     // write rejected (stack busy/congested): retry the same step a little later
+    if(++this->display_write_retries_ > DISPLAY_MAX_WRITE_RETRIES)
+    {
+      this->display_finish_("BLE writes keep being rejected", true);
+      return;
+    }
     this->set_timeout("prana_disp", 200, [this]() { this->display_step_(); });
     return;
   }
+  this->display_write_retries_ = 0;
+  this->display_budget_--;
   this->send_update_request();
   this->set_timeout("prana_disp", DISPLAY_STEP_TIMEOUT_MS, [this]() { this->display_on_timeout_(); });
 }
@@ -407,11 +435,20 @@ void PranaBLEHub::display_on_status_(uint8_t mode)
     return;
   if(mode == (uint8_t) this->display_target_)
   {
+    if(this->display_direct_pending_)
+      this->display_direct_misses_ = 0;
     this->display_finish_(this->display_direct_pending_ ? "reached (direct)" : "reached");
     return;
   }
   if(this->display_direct_pending_)
     return;  // the timeout decides about the direct attempt
+  if(this->display_settling_)
+  {
+    // fresh status after a retarget / direct fallback: this is the real starting point
+    this->cancel_timeout("prana_disp");
+    this->display_walk_from_(mode);
+    return;
+  }
   if(mode == (uint8_t) this->display_last_seen_)
     return;  // no progress (yet): a status that was in flight before the press, or a slow device. The timeout escalates.
 
@@ -452,10 +489,31 @@ void PranaBLEHub::display_on_timeout_()
       return;
     }
     this->display_direct_pending_ = false;
-    this->display_direct_failed_ = true;
-    ESP_LOGW(TAG, "[%s] Direct display set not confirmed (device reports mode %u); stepping instead for this connection",
-             this->get_name().c_str(), this->status.display_mode);
-    this->display_start_walk_();
+    if(++this->display_direct_misses_ >= DISPLAY_DIRECT_MISSES_TO_LATCH)
+    {
+      this->display_direct_failed_ = true;
+      ESP_LOGW(TAG, "[%s] Direct display set not confirmed %u times (device reports mode %u); stepping for the rest of this connection",
+               this->get_name().c_str(), this->display_direct_misses_, this->status.display_mode);
+    }
+    else
+    {
+      ESP_LOGW(TAG, "[%s] Direct display set not confirmed (device reports mode %u); stepping this time",
+               this->get_name().c_str(), this->status.display_mode);
+    }
+    // the direct command may have worked with its status still in flight: settle before pressing
+    this->display_start_walk_(true);
+    return;
+  }
+
+  if(this->display_settling_)
+  {
+    if(++this->display_stall_ <= 1)
+    {
+      this->send_update_request();
+      this->set_timeout("prana_disp", DISPLAY_STEP_TIMEOUT_MS, [this]() { this->display_on_timeout_(); });
+      return;
+    }
+    this->display_finish_("no status update from device", true);
     return;
   }
 
@@ -468,9 +526,9 @@ void PranaBLEHub::display_on_timeout_()
     this->set_timeout("prana_disp", DISPLAY_STEP_TIMEOUT_MS, [this]() { this->display_on_timeout_(); });
     return;
   }
-  if(this->display_stall_ == 2)
+  if(this->display_stall_ <= 3)
   {
-    // the press was dropped, or we are at an end stop of a non-wrapping ring: press again
+    // the press was dropped, or we are at an end stop of a non-wrapping ring: press again (twice at most)
     this->display_step_();
     return;
   }
@@ -486,12 +544,12 @@ void PranaBLEHub::display_on_timeout_()
     this->display_step_();
     return;
   }
-  this->display_finish_("device does not move or does not report its display mode");
+  this->display_finish_("device does not move or does not report its display mode", true);
 }
 
-void PranaBLEHub::display_finish_(const char *why)
+void PranaBLEHub::display_finish_(const char *why, bool failed)
 {
-  bool ok = this->status.display_mode == this->display_target_;
+  bool ok = !failed && this->status.display_mode == this->display_target_;
   if(ok)
     ESP_LOGD(TAG, "[%s] Display mode %d set (%s)", this->get_name().c_str(), this->display_target_, why);
   else
@@ -499,6 +557,7 @@ void PranaBLEHub::display_finish_(const char *why)
              this->display_target_, why, this->status.display_mode);
   this->display_target_ = -1;
   this->display_direct_pending_ = false;
+  this->display_settling_ = false;
   this->cancel_timeout("prana_disp");
 }
 
@@ -563,7 +622,7 @@ bool PranaBLEHub::send_command(uint8_t command, bool update) {
   PranaCmdPacket packet(command);
   auto status = this->send_packet(&packet, update);
 
-  if (status) 
+  if (status != ESP_OK)
   {
 
     ESP_LOGW(TAG, "[%s] writing button %s failed, status=%d", this->get_name().c_str(),
@@ -572,7 +631,7 @@ bool PranaBLEHub::send_command(uint8_t command, bool update) {
     ESP_LOGD(TAG, "[%s] writing button %s success", this->get_name().c_str(),
              LOG_STR_ARG(prana_cmd_to_string(command)));
   }
-  return status == 0;
+  return status == ESP_OK;
 }
 
 bool PranaBLEHub::send_command(PranaCommand command, bool update) {
@@ -686,7 +745,7 @@ void PranaBLEHub::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t 
       this->status_set_warning();
       this->last_notify_ = 0;
       if(this->display_target_ >= 0)
-        this->display_finish_("disconnected");
+        this->display_finish_("disconnected", true);
       this->dispatch_state_(false);
       break;
     }
@@ -698,6 +757,7 @@ void PranaBLEHub::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t 
         this->node_state = espbt::ClientState::ESTABLISHED;
         this->set_notify_(true);
         this->display_direct_failed_ = false;
+        this->display_direct_misses_ = 0;
 
         this->dispatch_state_(true);
 
@@ -716,7 +776,7 @@ void PranaBLEHub::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t 
 
     case ESP_GATTC_WRITE_CHAR_EVT: {
       // asynchronous write result; the stack only reports congestion synchronously
-      if (param->write.status != ESP_GATT_OK) {
+      if (param->write.handle == this->char_handle_ && param->write.status != ESP_GATT_OK) {
         ESP_LOGW(TAG, "[%s] Write to handle 0x%04X failed, status=0x%02X", this->get_name().c_str(),
                  param->write.handle, param->write.status);
       }
