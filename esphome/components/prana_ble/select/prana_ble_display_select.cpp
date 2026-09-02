@@ -20,27 +20,36 @@ void PranaBLEDisplaySelect::control(const std::string &value) {
     ESP_LOGW(TAG, "Not connected, cannot handle control call yet.");
     return;
   }
-  short ival = get_display_mode_from_string(value);
-  if(parent_->get_display_mode() != ival)
-  {
-    ESP_LOGW(TAG, "Setting value: %s %i", value.c_str(), ival);
-    parent_->set_display_mode(ival);
-    this->publish_state(value);
+  if (!this->parent_->has_status()) {
+    ESP_LOGW(TAG, "No status from device yet, cannot handle control call yet.");
+    return;
   }
+  short ival = get_display_mode_from_string(value);
+  ESP_LOGD(TAG, "Setting display mode: %s (%i)", value.c_str(), ival);
+  // No optimistic publish: the state follows what the device reports (on_status).
+  parent_->set_display_mode(ival);
 }
 
 
 void PranaBLEDisplaySelect::on_status(const PranaStatusPacket *data) {
   if(data == nullptr)
     return;
-  if(data->display_mode > PRANA_DISPLAY_MODES.size())
+  if(this->parent_->display_busy())
+    return;  // hold the state while a change is in progress; the final mode is published when it ends
+  if(data->display_mode >= PRANA_DISPLAY_MODES.size())
   {
     ESP_LOGE(TAG, "Incorrect display mode: %i", data->display_mode);
-    
     return;
   }
-  
-  this->publish_state(PRANA_DISPLAY_MODES[data->display_mode]);
+  const std::string &option = PRANA_DISPLAY_MODES[data->display_mode];
+  if(!this->has_option(option))
+  {
+    // e.g. slot 8 ("unused"): the select would reject a value that is not one of its options
+    ESP_LOGW(TAG, "Device reports display mode %i (%s), which is not a configured option",
+             data->display_mode, option.c_str());
+    return;
+  }
+  this->publish_state(option);
 }
 void PranaBLEDisplaySelect::dump_config() {
   LOG_SELECT("", describe().c_str(), this);

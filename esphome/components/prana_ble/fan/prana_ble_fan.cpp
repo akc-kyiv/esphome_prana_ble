@@ -17,7 +17,7 @@ void PranaBLEFan::dump_config() { LOG_FAN("", "Prana BLE Fan", this); }
 std::string PranaBLEFan::describe() { return "Prana BLE Fan"; }
 
 void PranaBLEFan::control(const fan::FanCall &call) {
-  if (!this->parent_->is_connected()) {
+  if (!this->parent_->is_connected() || !this->parent_->has_status()) {
     ESP_LOGW(TAG, "Not connected, cannot handle control call yet.");
     return;
   }

@@ -11,7 +11,7 @@ void PranaBLESwitch::dump_config() { LOG_SWITCH("", "Prana BLE Switch", this); }
 std::string PranaBLESwitch::describe() { return str_sprintf("Prana BLE Switch %s", this->get_name().c_str()); }
 
 void PranaBLESwitch::write_state(bool state) {
-  if (switch_type_ != PranaSwitchType::CONNECT && !this->parent_->is_connected()) {
+  if (switch_type_ != PranaSwitchType::CONNECT && (!this->parent_->is_connected() || !this->parent_->has_status())) {
     ESP_LOGW(TAG, "Not connected, cannot handle control call yet.");
     return;
   }
@@ -19,10 +19,11 @@ void PranaBLESwitch::write_state(bool state) {
   {
     case PranaSwitchType::ENABLE:
     {
+      // state-aware: the power command is a toggle on recent firmware
       if(!state)
-        this->parent_->command_poweroff();
+        this->parent_->set_fan_off(PranaFan::FAN_BOTH);
       else
-        this->parent_->command_poweron();
+        this->parent_->set_fan_on(PranaFan::FAN_BOTH);
       break;
     }
 

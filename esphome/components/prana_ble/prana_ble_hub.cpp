@@ -200,20 +200,35 @@ bool PranaBLEHub::set_fan_step(PranaFan fan, bool up)
     return false;
 }
 
+// The power and per-fan commands are toggles on recent firmware, so only send them when the
+// device is not already in the requested state (otherwise a "turn on" would switch the unit off).
 bool PranaBLEHub::set_fan_off(PranaFan fan)
 {
+  if(!this->has_status())
+  {
+    ESP_LOGW(TAG, "[%s] No status received yet, cannot switch fans off", this->get_name().c_str());
+    return false;
+  }
   switch(fan)
   {
     case FAN_BOTH:
     {
+      if(!status.enabled)
+        return true;
       if(command_poweroff())
+      {
         status.enabled = false;
-      break;
+        return true;
+      }
+      return false;
     }
-      
     case FAN_IN:
+      if(!status.input_enabled)
+        return true;
       return command_fan_in_off();
     case FAN_OUT:
+      if(!status.output_enabled)
+        return true;
       return command_fan_out_off();
   }
   return false;
@@ -222,15 +237,29 @@ bool PranaBLEHub::set_fan_off(PranaFan fan)
 
 bool PranaBLEHub::set_fan_on(PranaFan fan)
 {
+  if(!this->has_status())
+  {
+    ESP_LOGW(TAG, "[%s] No status received yet, cannot switch fans on", this->get_name().c_str());
+    return false;
+  }
   switch(fan)
   {
     case FAN_BOTH:
+      if(status.enabled)
+        return true;
       if(command_poweron())
+      {
         status.enabled = true;
-      break;
+        return true;
+      }
+      return false;
     case FAN_IN:
+      if(status.input_enabled)
+        return true;
       return command_fan_in_off();
     case FAN_OUT:
+      if(status.output_enabled)
+        return true;
       return command_fan_out_off();
   }
   return false;
@@ -275,44 +304,202 @@ short PranaBLEHub::get_display_mode()
   return status.display_mode;
 }
 
+/* Display mode
+ *
+ * There is no universally known "set display mode" command; the display is cycled with
+ * CMD_DISPLAY_LEFT / CMD_DISPLAY_RIGHT, and the set of modes (and their order) differs between
+ * device models. The old implementation computed a press count from a fixed 11-slot ring and fired
+ * the presses blindly 20 ms apart, which misses on devices with other rings and whenever the BLE
+ * stack drops a write. This state machine instead:
+ *   - optionally tries the direct set command (0x5A + mode, seen from the official app) and verifies
+ *     it against the reported display_mode, falling back to stepping if not confirmed;
+ *   - otherwise sends ONE press, requests a status update and only decides the next step from the
+ *     reported display_mode. Lack of progress is judged by time (DISPLAY_STEP_TIMEOUT_MS), not by
+ *     the number of notifications, because the 1 Hz poll delivers notifications that were already in
+ *     flight before a press. It stops when the target is reached, when the whole ring has been
+ *     visited without finding the target (mode not available on this device), when the device
+ *     stops moving in both directions, or after DISPLAY_MAX_STEPS.
+ * All callbacks run on the main loop (ESPHome dispatches GATT events from loop()).
+ */
 void PranaBLEHub::set_display_mode(short mode)
 {
-  auto current_mode = get_display_mode();
-  if(mode == current_mode)
+  if(!this->has_status())
+  {
+    ESP_LOGW(TAG, "[%s] No status received yet, cannot change display mode", this->get_name().c_str());
+    return;
+  }
+  if(mode < 0 || mode >= PranaDisplayMode::MODE_COUNT || mode == PranaDisplayMode::UNUSED)
+  {
+    ESP_LOGW(TAG, "[%s] Invalid display mode %d", this->get_name().c_str(), mode);
+    return;
+  }
+  if(mode == this->status.display_mode)
     return;
 
-  //minimizing cmd number by using left/right cmds
-  auto modes = PranaDisplayMode::MODE_COUNT;
-  auto diff_r = (mode - current_mode + modes) % modes;
-  auto diff_l = (current_mode - mode + modes) % modes;
-
-  if(diff_r <= diff_l)
+  if(this->display_target_ >= 0)
   {
-    //skipping UNUSED mode
-    if(current_mode < PranaDisplayMode::UNUSED && current_mode + diff_r > PranaDisplayMode::UNUSED)
-    {
-      diff_r -= 1;
-    }
-    for(int i=0; i < diff_r; ++i) {
-
-      send_command(CMD_DISPLAY_RIGHT, false);
-      delay(20);
-    }
+    ESP_LOGD(TAG, "[%s] Display change in progress, retargeting to %d", this->get_name().c_str(), mode);
+    this->cancel_timeout("prana_disp");
   }
+  this->display_target_ = mode;
+
+  if(this->display_direct_ && !this->display_direct_failed_)
+  {
+    uint8_t cmd = CMD_DISPLAY_SET_BASE + (uint8_t) mode;
+    ESP_LOGD(TAG, "[%s] Direct display set: mode %d (cmd 0x%02X)", this->get_name().c_str(), mode, cmd);
+    this->display_direct_pending_ = true;
+    this->display_direct_retry_ = false;
+    this->send_command(cmd, false);
+    this->send_update_request();
+    this->set_timeout("prana_disp", DISPLAY_STEP_TIMEOUT_MS, [this]() { this->display_on_timeout_(); });
+    return;
+  }
+  this->display_start_walk_();
+}
+
+bool PranaBLEHub::display_prefer_right_(uint8_t from, uint8_t to)
+{
+  int ci = prana_ring_index(from), ti = prana_ring_index(to);
+  if(ci < 0 || ti < 0)
+    return true;
+  const int n = PRANA_DISPLAY_RING_SIZE;
+  int r = (ti - ci + n) % n, l = (ci - ti + n) % n;
+  return r <= l;
+}
+
+void PranaBLEHub::display_start_walk_()
+{
+  this->display_direct_pending_ = false;
+  this->display_last_seen_ = this->status.display_mode;
+  this->display_budget_ = DISPLAY_MAX_STEPS;
+  this->display_stall_ = 0;
+  this->display_reversed_ = false;
+  this->display_visited_ = this->status.display_mode < 16 ? (1u << this->status.display_mode) : 0;
+  this->display_right_ = this->display_prefer_right_(this->status.display_mode, (uint8_t) this->display_target_);
+  ESP_LOGD(TAG, "[%s] Stepping display %s from mode %u towards %d", this->get_name().c_str(),
+           this->display_right_ ? "right" : "left", this->status.display_mode, this->display_target_);
+  this->display_step_();
+}
+
+void PranaBLEHub::display_step_()
+{
+  if(this->display_target_ < 0)
+    return;
+  if(this->display_budget_ == 0)
+  {
+    this->display_finish_("step budget exhausted");
+    return;
+  }
+  this->display_budget_--;
+  if(!this->send_command(this->display_right_ ? CMD_DISPLAY_RIGHT : CMD_DISPLAY_LEFT, false))
+  {
+    // write rejected (stack busy/congested): retry the same step a little later
+    this->set_timeout("prana_disp", 200, [this]() { this->display_step_(); });
+    return;
+  }
+  this->send_update_request();
+  this->set_timeout("prana_disp", DISPLAY_STEP_TIMEOUT_MS, [this]() { this->display_on_timeout_(); });
+}
+
+void PranaBLEHub::display_on_status_(uint8_t mode)
+{
+  if(this->display_target_ < 0)
+    return;
+  if(mode == (uint8_t) this->display_target_)
+  {
+    this->display_finish_(this->display_direct_pending_ ? "reached (direct)" : "reached");
+    return;
+  }
+  if(this->display_direct_pending_)
+    return;  // the timeout decides about the direct attempt
+  if(mode == (uint8_t) this->display_last_seen_)
+    return;  // no progress (yet): a status that was in flight before the press, or a slow device. The timeout escalates.
+
+  // progress
+  this->cancel_timeout("prana_disp");
+  this->display_stall_ = 0;
+  this->display_last_seen_ = mode;
+  if(mode < 16)
+  {
+    if(this->display_visited_ & (1u << mode))
+    {
+      this->display_finish_("walked the whole ring, mode is not available on this device");
+      return;
+    }
+    this->display_visited_ |= (1u << mode);
+  }
+  this->display_step_();
+}
+
+void PranaBLEHub::display_on_timeout_()
+{
+  if(this->display_target_ < 0)
+    return;
+
+  if(this->display_direct_pending_)
+  {
+    if(this->status.display_mode == this->display_target_)
+    {
+      this->display_finish_("reached (direct)");
+      return;
+    }
+    if(!this->display_direct_retry_)
+    {
+      // maybe no fresh status arrived yet: ask once more before judging
+      this->display_direct_retry_ = true;
+      this->send_update_request();
+      this->set_timeout("prana_disp", DISPLAY_STEP_TIMEOUT_MS, [this]() { this->display_on_timeout_(); });
+      return;
+    }
+    this->display_direct_pending_ = false;
+    this->display_direct_failed_ = true;
+    ESP_LOGW(TAG, "[%s] Direct display set not confirmed (device reports mode %u); stepping instead for this connection",
+             this->get_name().c_str(), this->status.display_mode);
+    this->display_start_walk_();
+    return;
+  }
+
+  // stepping: no progress within DISPLAY_STEP_TIMEOUT_MS since the last action
+  this->display_stall_++;
+  if(this->display_stall_ == 1)
+  {
+    // slow device or lost notification: ask again, do not press
+    this->send_update_request();
+    this->set_timeout("prana_disp", DISPLAY_STEP_TIMEOUT_MS, [this]() { this->display_on_timeout_(); });
+    return;
+  }
+  if(this->display_stall_ == 2)
+  {
+    // the press was dropped, or we are at an end stop of a non-wrapping ring: press again
+    this->display_step_();
+    return;
+  }
+  if(!this->display_reversed_)
+  {
+    ESP_LOGD(TAG, "[%s] Display does not move %s, reversing", this->get_name().c_str(),
+             this->display_right_ ? "right" : "left");
+    this->display_reversed_ = true;
+    this->display_right_ = !this->display_right_;
+    this->display_stall_ = 0;
+    // loop detection is per direction: start over from where we are
+    this->display_visited_ = this->display_last_seen_ >= 0 && this->display_last_seen_ < 16 ? (1u << this->display_last_seen_) : 0;
+    this->display_step_();
+    return;
+  }
+  this->display_finish_("device does not move or does not report its display mode");
+}
+
+void PranaBLEHub::display_finish_(const char *why)
+{
+  bool ok = this->status.display_mode == this->display_target_;
+  if(ok)
+    ESP_LOGD(TAG, "[%s] Display mode %d set (%s)", this->get_name().c_str(), this->display_target_, why);
   else
-  {
-    //skipping UNUSED mode
-    if(current_mode > PranaDisplayMode::UNUSED && current_mode - diff_l < PranaDisplayMode::UNUSED)
-    {
-      diff_l -= 1;
-    }
-    for(int i=0; i < diff_l; ++i) {
-      send_command(CMD_DISPLAY_LEFT, false);
-      delay(20);
-    }
-  }
-
-  send_update_request();
+    ESP_LOGW(TAG, "[%s] Display mode change to %d stopped: %s (device reports %u)", this->get_name().c_str(),
+             this->display_target_, why, this->status.display_mode);
+  this->display_target_ = -1;
+  this->display_direct_pending_ = false;
+  this->cancel_timeout("prana_disp");
 }
 
 bool PranaBLEHub::set_winter_mode(bool state)
@@ -392,19 +579,18 @@ bool PranaBLEHub::send_command(PranaCommand command, bool update) {
   return send_command((uint8_t)command, update);
 }
 
-uint8_t PranaBLEHub::send_packet(PranaCmdPacket *pkt, bool update)
+esp_err_t PranaBLEHub::send_packet(PranaCmdPacket *pkt, bool update)
 {
-  uint8_t result = this->send_data((uint8_t *) pkt, sizeof(PranaCmdPacket));
-  if(update && result!= 0)
+  esp_err_t result = this->send_data((uint8_t *) pkt, sizeof(PranaCmdPacket));
+  if(update && result == ESP_OK)
   {
-    delay(50);
-    return this->send_update_request();
+    // ask for a status update shortly after the command; a burst of commands coalesces into one request
+    this->set_timeout("prana_upd", 50, [this]() { this->send_update_request(); });
   }
-    
   return result;
 }
 
-uint8_t PranaBLEHub::send_data(uint8_t data[], uint8_t len) {
+esp_err_t PranaBLEHub::send_data(uint8_t data[], uint8_t len) {
   ESP_LOGD(TAG, "Send data: %s", format_hex_pretty(data, len).c_str());
   auto status = esp_ble_gattc_write_char(
                         this->parent_->get_gattc_if(), 
@@ -418,7 +604,7 @@ uint8_t PranaBLEHub::send_data(uint8_t data[], uint8_t len) {
   return status;
 }
 
-uint8_t PranaBLEHub::send_update_request()
+esp_err_t PranaBLEHub::send_update_request()
 {
   return send_data(const_cast<uint8_t*>(PRANA_STATE), sizeof(PRANA_STATE));
 }
@@ -498,6 +684,9 @@ void PranaBLEHub::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t 
     case ESP_GATTC_DISCONNECT_EVT: {
       ESP_LOGV(TAG, "Disconnected: reason=%d", param->disconnect.reason);
       this->status_set_warning();
+      this->last_notify_ = 0;
+      if(this->display_target_ >= 0)
+        this->display_finish_("disconnected");
       this->dispatch_state_(false);
       break;
     }
@@ -508,6 +697,7 @@ void PranaBLEHub::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t 
         ESP_LOGD(TAG, "[%s] Services complete: obtained char handles.", this->get_name().c_str());
         this->node_state = espbt::ClientState::ESTABLISHED;
         this->set_notify_(true);
+        this->display_direct_failed_ = false;
 
         this->dispatch_state_(true);
 
@@ -524,6 +714,14 @@ void PranaBLEHub::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t 
       break;
     }
 
+    case ESP_GATTC_WRITE_CHAR_EVT: {
+      // asynchronous write result; the stack only reports congestion synchronously
+      if (param->write.status != ESP_GATT_OK) {
+        ESP_LOGW(TAG, "[%s] Write to handle 0x%04X failed, status=0x%02X", this->get_name().c_str(),
+                 param->write.handle, param->write.status);
+      }
+      break;
+    }
     case ESP_GATTC_REG_FOR_NOTIFY_EVT: {
       // This event means that ESP received the request to enable notifications on the client side. But we also have to
       // tell the server that we want it to send notifications. Normally BLEClient parent would handle this
@@ -578,13 +776,16 @@ void PranaBLEHub::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t 
       PranaStatusPacket* packet = (PranaStatusPacket*)param->notify.value;
       if (packet != nullptr && packet->magic == PRANA_MAGIC) {
         this->status = *packet;
+        this->last_notify_ = millis();
+        this->fans_locked_ = packet->fans_locked;
+        this->display_on_status_(packet->display_mode);
         ESP_LOGD(TAG, "[%s] Notifying %d children.", this->get_name().c_str(), this->children_.size());
         for (auto *child : this->children_) {
           child->on_status(packet);
         }
-      } 
-      this->last_notify_ = millis();
-      this->fans_locked_ = packet->fans_locked;
+      } else {
+        ESP_LOGW(TAG, "[%s] Notification without status magic, ignored", this->get_name().c_str());
+      }
       ESP_LOGV(TAG, "Packet: %s", format_hex_pretty(param->notify.value, param->notify.value_len).c_str());
 
 

@@ -14,6 +14,23 @@ static const uint8_t PRANA_CMD_PREFIX = 0x04;
 static const uint8_t PRANA_TIME_PREFIX = 0x0C;
 static const uint8_t PRANA_STATE[] = {0xBE, 0xEF, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x5A};
 
+// Direct display-mode set: BE EF 04 (0x5A + mode). Captured from the official app, which sent
+// BE EF 04 64 to switch the display to "Time" (mode 10) in a single write. Opt-in via
+// `display_mode: { direct_control: true }`; the hub falls back to left/right stepping if the device
+// does not confirm the new mode.
+static const uint8_t CMD_DISPLAY_SET_BASE = 0x5A;
+
+// Order in which the display cycles on a fully equipped device. Slot 8 has never been observed
+// (upstream #17). Used only to pick the shorter stepping direction; each step is verified against
+// the device, so devices with fewer modes or another order still converge.
+static const uint8_t PRANA_DISPLAY_RING[] = {0, 1, 2, 3, 4, 5, 6, 7, 9, 10};
+static const int PRANA_DISPLAY_RING_SIZE = sizeof(PRANA_DISPLAY_RING) / sizeof(PRANA_DISPLAY_RING[0]);
+static inline int prana_ring_index(uint8_t mode) {
+  for (int i = 0; i < PRANA_DISPLAY_RING_SIZE; i++)
+    if (PRANA_DISPLAY_RING[i] == mode) return i;
+  return -1;
+}
+
 //Only new devices - direct fan speed control
 //inlet fan
 static const uint8_t cmd_fan_in_speed[10] = {
@@ -91,6 +108,9 @@ enum PranaDisplayMode : uint8_t {
 };
 
 enum PranaCommand : uint8_t {
+  // NOTE: on recent firmware 0x01 (and apparently 0x0A) TOGGLE power rather than set it, and the
+  // component has always used CMD_FAN_IN_OFF / CMD_FAN_OUT_OFF for both directions as well.
+  // Callers must check the current state before sending them (see PranaBLEHub::set_fan_on/off).
   CMD_POWER_OFF           = 0x01,
   CMD_BRIGHTNESS          = 0x02,
   CMD_HEATING             = 0x05,
@@ -196,8 +216,8 @@ struct PranaStatusPacket {
   uint8_t humidity;//60
   short co2;//61-62 //short?
   short voc;//63-64
-  uint8_t unknown10[13];//65-77
-  uint8_t pressure;//78
+  uint8_t unknown10[12];//65-76
+  short pressure;//77-78 big-endian, bit 15 = sensor present, value in mmHg
   uint8_t unknown11[15];//79-93
   uint8_t unused10;//C0
   uint8_t unknown12;//95

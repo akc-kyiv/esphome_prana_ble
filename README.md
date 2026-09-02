@@ -16,6 +16,9 @@ What is working for now:
   - Turn on/off, winter mode, heater switches
   - Set current display mode for recuperator's display
   - Keep the recuperator's clock in sync (optional `time_id`, see example config)
+  - Display mode changes are verified against the device (one step at a time, or a single direct
+    command with `direct_control: true`), so devices with fewer display modes or a different mode
+    order no longer end up on the wrong page
 
 
 See [example config](https://github.com/voed/esphome_prana_ble/blob/master/prana_conf_example.yaml) to create your own configuration.

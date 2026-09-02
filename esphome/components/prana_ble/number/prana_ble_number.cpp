@@ -6,7 +6,7 @@ namespace prana_ble {
 
 void PranaBLENumber::control(float value) {
   ESP_LOGV(TAG, "Setting number: %f", value);
-  if (!this->parent_->is_connected()) {
+  if (!this->parent_->is_connected() || !this->parent_->has_status()) {
     ESP_LOGW(TAG, "Not connected, cannot handle control call yet.");
     return;
   }

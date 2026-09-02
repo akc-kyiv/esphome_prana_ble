@@ -72,7 +72,13 @@ class PranaBLEHub : public esphome::ble_client::BLEClientNode, public PollingCom
   void set_brightness(short value);
 
   short get_display_mode();
+  /** Request a display mode. Asynchronous: the device is stepped (or set directly) and every step is
+   *  verified against the reported display_mode; the select is updated from status notifications. */
   void set_display_mode(short mode);
+  void set_display_direct(bool direct) { this->display_direct_ = direct; }
+  /** @return `true` while a display mode change is being carried out (the select then holds its state). */
+  bool display_busy() { return this->display_target_ >= 0; }
+  PranaFanMode get_fan_mode() { return status.fan_mode; }
 
   bool set_winter_mode(bool state);
   bool set_heating(bool state);
@@ -91,7 +97,8 @@ class PranaBLEHub : public esphome::ble_client::BLEClientNode, public PollingCom
   bool is_connected() { return this->node_state == espbt::ClientState::ESTABLISHED; }
   bool is_connection_enabled() { return this->keep_connected_; }
 
-  bool has_status() { return true;} //this->status != nullptr; }
+  /** @return `true` once at least one status notification has been received on this connection. */
+  bool has_status() { return this->last_notify_ != 0; }
 
   /** Register a `BedJetClient` child component. */
   void register_child(PranaBLEClient *obj);
@@ -132,16 +139,37 @@ class PranaBLEHub : public esphome::ble_client::BLEClientNode, public PollingCom
   static const uint32_t NOTIFY_WARN_THRESHOLD = 300000;
   static const uint32_t DEFAULT_STATUS_TIMEOUT = 900000;
 
-  PranaStatusPacket status;
-  bool fans_locked_;
+  PranaStatusPacket status{};
+  bool fans_locked_{false};
+
+  /* Display mode change state machine (see prana_ble_hub.cpp, "Display mode") */
+  static const uint32_t DISPLAY_STEP_TIMEOUT_MS = 700;
+  static const uint8_t DISPLAY_MAX_STEPS = 16;
+  bool display_direct_{false};          // config: try CMD_DISPLAY_SET_BASE + mode first
+  bool display_direct_failed_{false};   // direct set was not confirmed on this connection -> step only
+  int16_t display_target_{-1};          // -1 == idle
+  bool display_direct_pending_{false};  // a direct set was sent, waiting for confirmation
+  bool display_direct_retry_{false};
+  int16_t display_last_seen_{-1};
+  uint8_t display_budget_{0};
+  uint8_t display_stall_{0};            // consecutive timeouts without progress
+  bool display_right_{true};
+  bool display_reversed_{false};
+  uint16_t display_visited_{0};
+  void display_start_walk_();
+  void display_step_();
+  void display_on_status_(uint8_t mode);
+  void display_on_timeout_();
+  void display_finish_(const char *why);
+  bool display_prefer_right_(uint8_t from, uint8_t to);
 
   uint8_t set_notify_(bool enable);
   /** Send the `PranaCmdPacket` to the device. */
-  uint8_t send_packet(PranaCmdPacket *pkt, bool update=false);
-  uint8_t send_data(uint8_t data[], uint8_t len);
+  esp_err_t send_packet(PranaCmdPacket *pkt, bool update=false);
+  esp_err_t send_data(uint8_t data[], uint8_t len);
 
   void set_name_(const std::string &name) { this->name_ = name; }
-  uint8_t send_update_request();
+  esp_err_t send_update_request();
   std::string name_;
 
   uint32_t last_notify_ = 0;

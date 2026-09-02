@@ -16,12 +16,12 @@ PranaFanMode get_mode_from_string(const std::string& mode_string)
 }
 
 void PranaBLEFanSelect::control(const std::string &value) {
-  if (!this->parent_->is_connected()) {
+  if (!this->parent_->is_connected() || !this->parent_->has_status()) {
     ESP_LOGW(TAG, "Not connected, cannot handle control call yet.");
     return;
   }
   auto ival = get_mode_from_string(value);
-  if(parent_->get_display_mode() != ival)
+  if(parent_->get_fan_mode() != ival)
   {
     ESP_LOGW(TAG, "Setting value: %s %i", value.c_str(), ival);
     parent_->set_auto_mode(ival);
@@ -33,7 +33,7 @@ void PranaBLEFanSelect::on_status(const PranaStatusPacket *data) {
   if(data == nullptr)
     return;
   auto mode = data->fan_mode;
-  if(mode > PRANA_FAN_MODES.size())
+  if(mode >= PRANA_FAN_MODES.size())
   {
     ESP_LOGE(TAG, "Incorrect fan mode: %i", mode);
     return;
