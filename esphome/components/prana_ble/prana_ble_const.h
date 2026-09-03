@@ -1,6 +1,10 @@
 #pragma once
 
 #include <set>
+#include <string>
+#include <vector>
+
+#include "esphome/core/helpers.h"
 
 namespace esphome {
 namespace prana_ble {
@@ -93,6 +97,7 @@ enum PranaFanMode : uint8_t {
   Auto_Plus
 };
 
+// Values and names must match DISPLAY_MODES in select/__init__.py and PRANA_DISPLAY_MODES below.
 enum PranaDisplayMode : uint8_t {
   FAN         = 0,
   TEMP_IN     = 1,
@@ -243,6 +248,53 @@ struct PranaStatusPacket {
 
 static const std::vector<std::string> PRANA_FAN_MODES {"Manual", "Auto", "Auto+"};
 static const std::vector<std::string> PRANA_DISPLAY_MODES {"Fan", "Temp inside", "Temp outside", "CO2", "VOC", "Humidity", "Air quality", "Pressure", "unused", "Date", "Time"};
+
+// Sets of display modes are bit sets: 1 << PranaDisplayMode.
+static const uint16_t PRANA_DISPLAY_MODES_ALL = ((1u << PranaDisplayMode::MODE_COUNT) - 1) & ~(1u << PranaDisplayMode::UNUSED);
+// Pages assumed to exist on every model.
+static const uint16_t PRANA_DISPLAY_MODES_BASE =
+    (1u << PranaDisplayMode::FAN) | (1u << PranaDisplayMode::DATE) | (1u << PranaDisplayMode::TIME);
+
+// 16-bit sensor fields are big-endian with bit 15 set when the sensor is installed; absent sensors read 0.
+static inline bool prana_sensor_present(short raw) { return (byteswap((uint16_t) raw) & 0x8000) != 0; }
+
+// Which display pages the device has, judged from the sensors it reports: a page exists when its sensor
+// does (Air quality when CO2 or VOC does). Fan, Date and Time are assumed on every model, and the page
+// currently shown counts as well.
+static inline uint16_t prana_display_modes_from_status(const PranaStatusPacket *s) {
+  uint16_t modes = PRANA_DISPLAY_MODES_BASE;
+  if (prana_sensor_present(s->temp_inside_in) || prana_sensor_present(s->temp_inside_out))
+    modes |= 1u << PranaDisplayMode::TEMP_IN;
+  if (prana_sensor_present(s->temp_outside_in) || prana_sensor_present(s->temp_outside_out))
+    modes |= 1u << PranaDisplayMode::TEMP_OUT;
+  bool has_co2 = prana_sensor_present(s->co2), has_voc = prana_sensor_present(s->voc);
+  if (has_co2)
+    modes |= 1u << PranaDisplayMode::CO2;
+  if (has_voc)
+    modes |= 1u << PranaDisplayMode::VOC;
+  if (has_co2 || has_voc)
+    modes |= 1u << PranaDisplayMode::AIR_QUALITY;
+  if (s->humidity & 0x80)  // 8-bit field, bit 7 = sensor present
+    modes |= 1u << PranaDisplayMode::HUMIDITY;
+  if (prana_sensor_present(s->pressure))
+    modes |= 1u << PranaDisplayMode::PRESSURE;
+  if (s->display_mode < PranaDisplayMode::MODE_COUNT && s->display_mode != PranaDisplayMode::UNUSED)
+    modes |= 1u << s->display_mode;
+  return modes;
+}
+
+// e.g. "Fan, Temp outside, Date, Time"
+static inline std::string prana_display_modes_to_string(uint16_t modes) {
+  std::string out;
+  for (uint8_t i = 0; i < PranaDisplayMode::MODE_COUNT; i++) {
+    if (!(modes & (1u << i)))
+      continue;
+    if (!out.empty())
+      out += ", ";
+    out += PRANA_DISPLAY_MODES[i];
+  }
+  return out;
+}
 
 }  // namespace prana_ble
 }  // namespace esphome

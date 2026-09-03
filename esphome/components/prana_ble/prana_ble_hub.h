@@ -73,9 +73,14 @@ class PranaBLEHub : public esphome::ble_client::BLEClientNode, public PollingCom
 
   short get_display_mode();
   /** Request a display mode. Asynchronous: the device is stepped (or set directly) and every step is
-   *  verified against the reported display_mode; the select is updated from status notifications. */
-  void set_display_mode(short mode);
+   *  verified against the reported display_mode; the select is updated from status notifications.
+   *  @return `false` if the request was not accepted: no status yet, invalid mode, or a mode this device
+   *  does not have (see set_display_supported()). */
+  bool set_display_mode(short mode);
   void set_display_direct(bool direct) { this->display_direct_ = direct; }
+  /** The modes this device has, as a bit set (1 << PranaDisplayMode). Requests for other modes are
+   *  refused without touching the device. Set by the display select (`modes:` or detected); default all. */
+  void set_display_supported(uint16_t modes) { this->display_supported_ = modes; }
   /** @return `true` while a display mode change is being carried out (the select then holds its state). */
   bool display_busy() { return this->display_target_ >= 0; }
   PranaFanMode get_fan_mode() { return status.fan_mode; }
@@ -148,6 +153,7 @@ class PranaBLEHub : public esphome::ble_client::BLEClientNode, public PollingCom
   static const uint8_t DISPLAY_MAX_WRITE_RETRIES = 10;
   static const uint8_t DISPLAY_DIRECT_MISSES_TO_LATCH = 2;
   bool display_direct_{false};          // config: try CMD_DISPLAY_SET_BASE + mode first
+  uint16_t display_supported_{PRANA_DISPLAY_MODES_ALL};
   bool display_direct_failed_{false};   // direct set unconfirmed repeatedly on this connection -> step only
   uint8_t display_direct_misses_{0};    // consecutive unconfirmed direct attempts
   int16_t display_target_{-1};          // -1 == idle

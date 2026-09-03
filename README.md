@@ -21,6 +21,8 @@ What is working for now:
     order no longer end up on the wrong page. The direct command is what the official app sends and
     is confirmed on a PRANA 150 (firmware 49); try it, the component falls back to stepping if your
     device ignores it
+  - The display-mode select offers only the pages your device has: list them under `modes:`, or let the
+    component detect them from the sensors the device reports (applied on the next boot)
 
 
 See [example config](https://github.com/voed/esphome_prana_ble/blob/master/prana_conf_example.yaml) to create your own configuration.

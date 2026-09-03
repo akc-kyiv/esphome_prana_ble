@@ -326,26 +326,35 @@ short PranaBLEHub::get_display_mode()
  *     the number of notifications, because the 1 Hz poll delivers notifications that were already in
  *     flight before a press. It stops when the target is reached, when the whole ring has been
  *     visited without finding the target (mode not available on this device), when the device
- *     stops moving in both directions, or after DISPLAY_MAX_STEPS.
+ *     stops moving in both directions, or after DISPLAY_MAX_STEPS;
+ *   - refuses modes the device is known not to have (display_supported_, from the select's `modes:`
+ *     list or detected from the reported sensors) instead of walking the ring or spending a direct
+ *     attempt on them.
  * All callbacks run on the main loop (ESPHome dispatches GATT events from loop()).
  */
-void PranaBLEHub::set_display_mode(short mode)
+bool PranaBLEHub::set_display_mode(short mode)
 {
   if(!this->has_status())
   {
     ESP_LOGW(TAG, "[%s] No status received yet, cannot change display mode", this->get_name().c_str());
-    return;
+    return false;
   }
   if(mode < 0 || mode >= PranaDisplayMode::MODE_COUNT || mode == PranaDisplayMode::UNUSED)
   {
     ESP_LOGW(TAG, "[%s] Invalid display mode %d", this->get_name().c_str(), mode);
-    return;
+    return false;
   }
   if(mode == this->status.display_mode)
   {
     if(this->display_target_ >= 0)
       this->display_finish_("retargeted to the mode currently shown");
-    return;
+    return true;
+  }
+  if(!(this->display_supported_ & (1u << mode)))
+  {
+    ESP_LOGW(TAG, "[%s] Display mode %d (%s) is not available on this device, ignored (list it under `modes:` to override)",
+             this->get_name().c_str(), mode, PRANA_DISPLAY_MODES[mode].c_str());
+    return false;
   }
 
   bool retarget = this->display_target_ >= 0;
@@ -366,10 +375,11 @@ void PranaBLEHub::set_display_mode(short mode)
     this->send_command(cmd, false);
     this->send_update_request();
     this->set_timeout("prana_disp", DISPLAY_STEP_TIMEOUT_MS, [this]() { this->display_on_timeout_(); });
-    return;
+    return true;
   }
   // after a retarget a press of the previous walk may still be in flight: settle on a fresh status first
   this->display_start_walk_(retarget);
+  return true;
 }
 
 bool PranaBLEHub::display_prefer_right_(uint8_t from, uint8_t to)

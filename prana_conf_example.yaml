@@ -147,6 +147,12 @@ select:
     # select what to display on your recuperator screen: "Fan", "Temp inside", "Temp outside", "CO2", "VOC", "Humidity", "Air quality", "Pressure", "Date", "Time"
     display_mode:
       name: "Display mode"
+      # Optional: offer only the pages your device has, in this order. Without the list the pages are
+      # detected from the sensors the device reports (Fan, Date and Time are always assumed), stored in
+      # flash and used from the next boot on (Home Assistant reads the option list only when it connects).
+      # Requests for pages the device does not have are refused right away. A page left out of the list
+      # can still be reached from the device's own button, but the select cannot report it then.
+      # modes: ["Fan", "Temp inside", "Temp outside", "CO2", "VOC", "Humidity", "Air quality", "Pressure", "Date", "Time"]
       # Optional: set the mode with one command (BE EF 04 5A+mode, as the official app does) instead of
       # stepping left/right. Confirmed on a PRANA 150 (firmware 49). The result is verified; if the device
       # does not confirm it, stepping is used (and only stepping, after two unconfirmed attempts on the
