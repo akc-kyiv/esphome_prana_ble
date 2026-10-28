@@ -1,5 +1,3 @@
-#include <type_traits>
-
 #include "esphome/core/log.h"
 #include "prana_ble_display_select.h"
 
@@ -8,22 +6,6 @@ namespace prana_ble {
 
 // salt for the preference key; change when the stored layout changes
 static const uint32_t DISPLAY_MODES_PREF_VERSION = 0x50444D01;
-
-// Fill the select's option container from a mode set. Written against the container type so that it
-// compiles with SelectTraits holding FixedVector<const char *> (current ESPHome) as well as
-// std::vector<std::string> (older releases).
-template<typename Options> static void fill_display_options(Options &options, uint16_t modes) {
-  if constexpr (!std::is_same<Options, std::vector<std::string>>::value) {
-    int count = 0;
-    for (uint8_t i = 0; i < PranaDisplayMode::MODE_COUNT; i++)
-      if (modes & (1u << i))
-        count++;
-    options.init(count);
-  }
-  for (uint8_t i = 0; i < PranaDisplayMode::MODE_COUNT; i++)
-    if (modes & (1u << i))
-      options.push_back(PRANA_DISPLAY_MODES[i].c_str());  // static storage, valid for the life of the program
-}
 
 PranaDisplayMode get_display_mode_from_string(const std::string& mode_string)
 {
@@ -62,8 +44,18 @@ void PranaBLEDisplaySelect::setup() {
 }
 
 void PranaBLEDisplaySelect::apply_modes_(uint16_t modes) {
-  std::decay_t<decltype(this->traits.get_options())> options;
-  fill_display_options(options, modes);
+  // Build the list as a FixedVector and hand it to set_options(), which copies the pointers. That
+  // overload exists in ESPHome 2026.9 and 2026.10+; the traits' own container type changed between
+  // them (FixedVector, then ConstVector), so never construct that type here.
+  size_t count = 0;
+  for (uint8_t i = 0; i < PranaDisplayMode::MODE_COUNT; i++)
+    if (modes & (1u << i))
+      count++;
+  FixedVector<const char *> options;
+  options.init(count);
+  for (uint8_t i = 0; i < PranaDisplayMode::MODE_COUNT; i++)
+    if (modes & (1u << i))
+      options.push_back(PRANA_DISPLAY_MODES[i].c_str());  // static storage, valid for the life of the program
   this->traits.set_options(options);
   this->parent_->set_display_supported(modes);
 }
